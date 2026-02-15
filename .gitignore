@@ -32,3 +32,5 @@ kospi_screener_results_*.csv
 # Node (Vercel)
 node_modules/
 .vercel/
+.next/
+frontend/.env.local

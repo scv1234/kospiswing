@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+pykrx
+finance-datareader
+pandas
+numpy
+supabase
+python-dotenv
