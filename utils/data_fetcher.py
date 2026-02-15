@@ -112,19 +112,45 @@ def get_latest_business_day():
 
 @st.cache_data(ttl=600)  # 10분 캐시 (장중 업데이트 고려)
 def get_kospi_chart_data(days=60):
-    """KOSPI 일봉 데이터 (차트용)"""
+    """KOSPI 일봉 데이터 (차트용) — pykrx 우선, FDR fallback"""
     end_date = datetime.now().strftime("%Y%m%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
-    df = stock.get_index_ohlcv(start_date, end_date, "1001") # KOSPI
-    return df
+    
+    # 1순위: pykrx
+    try:
+        df = stock.get_index_ohlcv(start_date, end_date, "1001")  # KOSPI
+        if not df.empty:
+            return df
+    except Exception:
+        pass
+    
+    # 2순위: FinanceDataReader (클라우드 환경 fallback)
+    try:
+        start_fdr = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        end_fdr = datetime.now().strftime("%Y-%m-%d")
+        df = fdr.DataReader("KS11", start_fdr, end_fdr)  # KS11 = KOSPI
+        if not df.empty:
+            # pykrx 컬럼명으로 맞춤 (1페이지 호환)
+            df = df.rename(columns={
+                'Open': '시가', 'High': '고가', 'Low': '저가',
+                'Close': '종가', 'Volume': '거래량'
+            })
+            return df
+    except Exception:
+        pass
+    
+    return pd.DataFrame()
 
 @st.cache_data(ttl=600)
 def get_exchange_rate_data(symbol="USD/KRW", days=60):
     """환율 데이터 (USD/KRW 등)"""
-    end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    df = fdr.DataReader(symbol, start_date, end_date)
-    return df
+    try:
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        df = fdr.DataReader(symbol, start_date, end_date)
+        return df
+    except Exception:
+        return pd.DataFrame()
 @st.cache_data(ttl=600)
 def get_market_net_purchases(date, market="KOSPI", investor="외국인", top_n=30):
     """일자별 순매수/순매도 데이터 (top_n=None이면 전체 반환)"""
