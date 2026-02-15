@@ -172,21 +172,24 @@ st.caption(f"Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
 st.markdown("---")
 
-# 메인 대시보드 요약
+# ── 메인 내비게이션 (모바일 최적화 대형 버튼) ──
+st.markdown("### 📍 메뉴")
+
 col1, col2 = st.columns(2)
 
 with col1:
-    st.info("**📊 Top-Down 리포트**\n\n시장 지표와 섹터 수급을 확인하고 시장 방향성을 진단합니다.")
+    with st.container(border=True):
+        st.markdown("### 📊 Top-Down 리포트")
+        st.caption("시장 지표 · 섹터 수급 · AI 분석")
+        st.page_link("pages/1_Daily_Top_Down.py", label="📊 리포트 보기", use_container_width=True)
     
 with col2:
-    st.success("**🚀 스윙 트레이딩**\n\n알고리즘이 선정한 오늘의 TOP 3 종목과 추천 사유를 확인합니다.")
+    with st.container(border=True):
+        st.markdown("### 🚀 스윙 트레이딩")
+        st.caption("TOP 3 추천 · 기술적 분석 · 매매 전략")
+        st.page_link("pages/2_Swing_Trading.py", label="🚀 종목 분석", use_container_width=True)
 
-with st.expander("앱 사용 가이드", expanded=True):
-    st.markdown("""
-    1. **좌측 상단 메뉴(>_)**를 눌러 페이지를 이동하세요.
-    2. **데이터 새로고침**이 필요하면 아래 버튼을 누르세요.
-    3. 📱 모바일 환경에 최적화되어 있습니다.
-    """)
+st.markdown("---")
 
 # 데이터 갱신 버튼
 if st.button("🔄 데이터 캐시 초기화 (새로고침)", type="primary", use_container_width=True):
@@ -200,3 +203,4 @@ st.markdown(
     "</p>", 
     unsafe_allow_html=True
 )
+
