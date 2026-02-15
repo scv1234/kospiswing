@@ -10,6 +10,7 @@ export default function BottomNav() {
         { href: "/", icon: "🏠", label: "홈" },
         { href: "/topdown", icon: "📊", label: "리포트" },
         { href: "/swing", icon: "🚀", label: "스윙" },
+        { href: "/journal", icon: "📝", label: "기록" },
     ];
 
     return (

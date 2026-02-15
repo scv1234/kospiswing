@@ -169,12 +169,12 @@ def api_swing():
     """스윙 트레이딩 분석"""
     try:
         from utils.analysis import run_swing_analysis
-        results = run_swing_analysis()
+        df_result, top_picks = run_swing_analysis()
         
-        if results is None or results.empty:
+        if df_result is None or df_result.empty:
             return {"data": [], "top3": []}
         
-        records = df_to_records(results)
+        records = df_to_records(df_result)
         top3 = records[:3] if len(records) >= 3 else records
         
         return {
@@ -214,6 +214,72 @@ def api_report_generate():
         if report_text and not report_text.startswith("리포트 생성 중 오류"):
             return {"success": True, "date": date, "storage": storage, "content": report_text}
         return {"success": False, "error": report_text}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════
+# Trading Journal (매매기록)
+# ═══════════════════════════════════════
+from pydantic import BaseModel
+from typing import Optional
+
+
+class TradeRecord(BaseModel):
+    date: str
+    ticker: str
+    trade_type: str  # "매수" or "매도"
+    price: int
+    qty: int
+    note: Optional[str] = ""
+
+
+@app.get("/api/trades")
+def api_trades_list():
+    """매매기록 조회"""
+    from utils.supabase_client import get_supabase_client
+    client = get_supabase_client()
+    if not client:
+        return {"data": []}
+    try:
+        result = client.table("trades").select("*").order("date", desc=True).limit(100).execute()
+        return {"data": result.data or []}
+    except Exception as e:
+        return {"data": [], "error": str(e)}
+
+
+@app.post("/api/trades")
+def api_trades_create(trade: TradeRecord):
+    """매매기록 추가"""
+    from utils.supabase_client import get_supabase_client
+    client = get_supabase_client()
+    if not client:
+        return {"success": False, "error": "DB 연결 실패"}
+    try:
+        data = {
+            "date": trade.date,
+            "ticker": trade.ticker,
+            "trade_type": trade.trade_type,
+            "price": trade.price,
+            "qty": trade.qty,
+            "note": trade.note or "",
+        }
+        client.table("trades").insert(data).execute()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/trades/{trade_id}")
+def api_trades_delete(trade_id: int):
+    """매매기록 삭제"""
+    from utils.supabase_client import get_supabase_client
+    client = get_supabase_client()
+    if not client:
+        return {"success": False, "error": "DB 연결 실패"}
+    try:
+        client.table("trades").delete().eq("id", trade_id).execute()
+        return {"success": True}
     except Exception as e:
         return {"success": False, "error": str(e)}
 

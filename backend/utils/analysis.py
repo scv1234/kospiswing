@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 from pykrx import stock
 from datetime import datetime, timedelta
-import streamlit as st
+# streamlit 제거 (FastAPI 환경)
 import time
 
 # utils 경로 추가 (필요 시)
@@ -14,7 +14,6 @@ from utils.data_fetcher import get_latest_business_day
 # 스윙 트레이딩 분석 로직 (swing_screener.py 기반)
 # 모바일 환경을 고려하여 캐싱 및 데이터 경량화 적용
 
-@st.cache_data(ttl=3600*4)  # 4시간 캐싱
 def run_swing_analysis():
     """
     KOSPI 스윙 트레이딩 4단계 분석 실행
@@ -25,7 +24,7 @@ def run_swing_analysis():
     
     # 1. 기준일 설정 (data_fetcher의 검증된 로직 사용)
     target_date = get_latest_business_day()
-    st.success(f"📊 분석 기준일: {target_date} (데이터 수신 중...)")
+    print(f"📊 분석 기준일: {target_date}")
     
     start_90d = (datetime.strptime(target_date, "%Y%m%d") - timedelta(days=120)).strftime("%Y%m%d")
 
@@ -37,7 +36,7 @@ def run_swing_analysis():
         df_indi = stock.get_market_net_purchases_of_equities(target_date, target_date, "KOSPI", "개인")
         
         if df_foreign.empty or df_inst.empty:
-            st.error(f"수급 데이터가 비어있습니다. (Date: {target_date})")
+            print(f"수급 데이터가 비어있습니다. (Date: {target_date})")
             return pd.DataFrame(), []
             
         # 순매수/순매도 포지션 확인 (Ticker Set)
@@ -57,10 +56,10 @@ def run_swing_analysis():
         target_tickers = list(top_foreign | top_inst)
         
         # 디버깅: 분석 대상 개수 표시
-        st.info(f"🔍 1차 선별된 {len(target_tickers)}개 종목에 대해 심층 분석을 시작합니다...")
+        print(f"🔍 1차 선별된 {len(target_tickers)}개 종목 심층 분석 시작")
 
     except Exception as e:
-        st.error(f"데이터 조회 실패: {e}")
+        print(f"데이터 조회 실패: {e}")
         return pd.DataFrame(), []
 
     # 3. 펀더멘털 데이터 로드 & Top-Down(주도 섹터) 데이터 로드
@@ -376,11 +375,8 @@ def run_swing_analysis():
         except Exception as e:
             return {"error": str(e), "Code": ticker, "Traceback": f"Error in analyze_ticker: {e}"}
     
-    # 진행 상황 표시 (Streamlit)
-    progress_bar = st.progress(0)
     total_targets = len(target_tickers)
-    status_text = st.empty()
-    status_text.text(f"분석 대상 {total_targets}개 종목 심층 분석 중... (속도 조절)")
+    print(f"분석 대상 {total_targets}개 종목 심층 분석 중...")
     
     # 에러 로그 수집
     error_logs = []
@@ -402,18 +398,15 @@ def run_swing_analysis():
                     results.append(data)
             
             completed_count += 1
-            progress_bar.progress(min(completed_count / total_targets, 1.0))
 
-    progress_bar.empty()
-    status_text.empty()
+    print(f"분석 완료: {len(results)}개 종목")
     
     # 디버깅: 에러가 있다면 화면에 일부 출력
     if error_logs:
-        with st.expander(f"⚠️ 분석 실패 {len(error_logs)}건 (디버깅용)", expanded=True):
-            st.write(pd.DataFrame(error_logs))
+        print(f"⚠️ 분석 실패 {len(error_logs)}건")
     
     if not results:
-        st.warning("분석 결과가 없습니다. 위 에러 로그를 확인해주세요.")
+        print("분석 결과가 없습니다.")
         return pd.DataFrame(), []
         
     df_result = pd.DataFrame(results).sort_values("스윙점수", ascending=False)
