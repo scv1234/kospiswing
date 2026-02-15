@@ -1,0 +1,8 @@
+streamlit
+finance-datareader
+pykrx
+pandas
+numpy
+plotly
+supabase
+python-dotenv
