@@ -25,7 +25,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pykrx FinanceDataReader pandas numpy supabase python-dotenv
+          pip install pykrx finance-datareader pandas numpy supabase python-dotenv
 
       - name: Run daily analysis
         env:
