@@ -32,3 +32,36 @@ CREATE POLICY "Enable insert access for all users" ON reports
 
 CREATE POLICY "Enable update access for all users" ON reports
     FOR UPDATE USING (true);
+
+
+-- ═══════════════════════════════════════
+-- 스윙 분석 결과 테이블 (GitHub Actions → 프론트엔드)
+-- ═══════════════════════════════════════
+CREATE TABLE IF NOT EXISTS analysis_results (
+    id BIGSERIAL PRIMARY KEY,
+    target_date TEXT NOT NULL,                  -- '20260215' 형식
+    result_type TEXT NOT NULL DEFAULT 'swing',  -- 'swing' | 'topdown' 등
+    results_json TEXT NOT NULL,                 -- 전체 스크리닝 결과 (JSON 문자열)
+    top_picks_json TEXT,                        -- TOP 3 종목 (JSON 문자열)
+    stock_count INTEGER DEFAULT 0,             -- 분석된 종목 수
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+
+    UNIQUE(target_date, result_type)
+);
+
+-- 인덱스
+CREATE INDEX IF NOT EXISTS idx_analysis_date ON analysis_results(target_date);
+CREATE INDEX IF NOT EXISTS idx_analysis_type ON analysis_results(result_type);
+CREATE INDEX IF NOT EXISTS idx_analysis_created ON analysis_results(created_at DESC);
+
+-- RLS
+ALTER TABLE analysis_results ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Enable read for all" ON analysis_results
+    FOR SELECT USING (true);
+
+CREATE POLICY "Enable insert for all" ON analysis_results
+    FOR INSERT WITH CHECK (true);
+
+CREATE POLICY "Enable update for all" ON analysis_results
+    FOR UPDATE USING (true);

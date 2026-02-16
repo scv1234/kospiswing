@@ -189,6 +189,43 @@ with col2:
         st.caption("TOP 3 추천 · 기술적 분석 · 매매 전략")
         st.page_link("pages/2_Swing_Trading.py", label="🚀 종목 분석", use_container_width=True)
 
+col3, col4 = st.columns(2)
+
+with col3:
+    with st.container(border=True):
+        st.markdown("### 📝 매매일지")
+        st.caption("매매 기록 · 수익률 분석 · 복기")
+        st.page_link("pages/3_Trading_Journal.py", label="📝 매매일지", use_container_width=True)
+
+with col4:
+    with st.container(border=True):
+        st.markdown("### 📈 KOSPI 차트")
+        st.caption("최근 60일 일봉 · 이동평균선")
+        # 미니 KOSPI 차트 표시
+        try:
+            from utils.data_fetcher import get_kospi_chart_data
+            import plotly.graph_objects as go
+            _kospi = get_kospi_chart_data(days=30)
+            if not _kospi.empty:
+                _fig = go.Figure(go.Scatter(
+                    x=_kospi.index, y=_kospi['종가'],
+                    mode='lines', fill='tozeroy',
+                    line=dict(color='#667eea', width=2),
+                    fillcolor='rgba(102, 126, 234, 0.1)'
+                ))
+                _fig.update_layout(
+                    margin=dict(l=0, r=0, t=0, b=0),
+                    height=120,
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    xaxis=dict(visible=False),
+                    yaxis=dict(visible=False),
+                    showlegend=False
+                )
+                st.plotly_chart(_fig, use_container_width=True, config={'displayModeBar': False})
+        except:
+            st.caption("차트 로딩 중...")
+
 st.markdown("---")
 
 # 데이터 갱신 버튼

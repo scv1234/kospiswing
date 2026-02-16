@@ -67,9 +67,74 @@ with row2_c1:
 with row2_c2:
     st.metric("SOX (반도체)", sox_now, sox_delta)
 
-# 1-2. 섹터 등락률 Top/Bottom
+# 1-2. KOSPI 트렌드 차트
 st.markdown("---")
-st.subheader("1-2. 섹터 등락률 (Top & Bottom)")
+st.subheader("1-2. KOSPI 추세 차트 (60일)")
+
+kospi_chart_df = get_kospi_chart_data(days=60)
+if not kospi_chart_df.empty:
+    import plotly.graph_objects as go
+
+    # 이동평균선 계산
+    kospi_chart_df['MA5'] = kospi_chart_df['종가'].rolling(5).mean()
+    kospi_chart_df['MA20'] = kospi_chart_df['종가'].rolling(20).mean()
+
+    fig_kospi = go.Figure()
+
+    # 캔들스틱
+    fig_kospi.add_trace(go.Candlestick(
+        x=kospi_chart_df.index,
+        open=kospi_chart_df['시가'],
+        high=kospi_chart_df['고가'],
+        low=kospi_chart_df['저가'],
+        close=kospi_chart_df['종가'],
+        name='KOSPI',
+        increasing_line_color='#d62728',
+        decreasing_line_color='#1f77b4'
+    ))
+
+    # MA5 / MA20
+    fig_kospi.add_trace(go.Scatter(
+        x=kospi_chart_df.index, y=kospi_chart_df['MA5'],
+        mode='lines', name='MA5',
+        line=dict(color='#ff7f0e', width=1.2, dash='dot')
+    ))
+    fig_kospi.add_trace(go.Scatter(
+        x=kospi_chart_df.index, y=kospi_chart_df['MA20'],
+        mode='lines', name='MA20',
+        line=dict(color='#2ca02c', width=1.5)
+    ))
+
+    # 거래량 서브차트 (보조 y축)
+    fig_kospi.add_trace(go.Bar(
+        x=kospi_chart_df.index,
+        y=kospi_chart_df['거래량'],
+        name='거래량',
+        yaxis='y2',
+        marker_color='rgba(102, 126, 234, 0.3)',
+        showlegend=False
+    ))
+
+    fig_kospi.update_layout(
+        height=400,
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family="Pretendard, Malgun Gothic, sans-serif"),
+        margin=dict(l=10, r=10, t=10, b=10),
+        xaxis=dict(rangeslider=dict(visible=False)),
+        yaxis=dict(title=None, side='right', showgrid=True, gridcolor='rgba(200,200,200,0.3)'),
+        yaxis2=dict(overlaying='y', side='left', showticklabels=False, range=[0, kospi_chart_df['거래량'].max() * 4]),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+        dragmode='pan'
+    )
+
+    st.plotly_chart(fig_kospi, use_container_width=True)
+else:
+    st.info("KOSPI 차트 데이터를 불러오지 못했습니다.")
+
+# 1-3. 섹터 등락률 Top/Bottom
+st.markdown("---")
+st.subheader("1-3. 섹터 등락률 (Top & Bottom)")
 sector_returns = get_sector_returns(target_date)
 
 if not sector_returns.empty:

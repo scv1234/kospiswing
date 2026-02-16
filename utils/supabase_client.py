@@ -122,18 +122,83 @@ def load_report_latest() -> tuple[str | None, str | None]:
     client = get_supabase_client()
     if not client:
         return None, None
-    
+
     try:
         result = client.table("reports").select("content, target_date, created_at").eq(
             "report_type", "topdown"
         ).order(
             "created_at", desc=True
         ).limit(1).execute()
-        
+
         if result.data and len(result.data) > 0:
             row = result.data[0]
             return row["content"], row["target_date"]
-        
+
         return None, None
     except Exception as e:
         return None, None
+
+
+# ═══════════════════════════════════════
+# 스윙 분석 결과 조회 (GitHub Actions가 저장한 데이터)
+# ═══════════════════════════════════════
+def load_swing_results(target_date: str = None):
+    """
+    Supabase에서 스윙 분석 결과를 조회합니다.
+
+    Args:
+        target_date: 특정 날짜 (None이면 최신)
+
+    Returns:
+        (df_result, top_picks, source_date) 또는 (None, None, None)
+    """
+    import json
+    import pandas as pd
+
+    client = get_supabase_client()
+    if not client:
+        return None, None, None
+
+    try:
+        query = client.table("analysis_results").select(
+            "results_json, top_picks_json, target_date, created_at"
+        ).eq("result_type", "swing")
+
+        if target_date:
+            query = query.eq("target_date", target_date)
+
+        result = query.order("created_at", desc=True).limit(1).execute()
+
+        if not result.data or len(result.data) == 0:
+            return None, None, None
+
+        row = result.data[0]
+
+        # JSON → DataFrame 복원
+        df_result = pd.read_json(row["results_json"], orient='records')
+
+        # 태그 복원 (JSON 문자열 → 리스트)
+        if '태그' in df_result.columns:
+            def parse_tags(x):
+                if isinstance(x, list):
+                    return x
+                try:
+                    return json.loads(x)
+                except:
+                    return []
+            df_result['태그'] = df_result['태그'].apply(parse_tags)
+
+        top_picks = json.loads(row["top_picks_json"])
+
+        # top_picks의 태그도 복원
+        for pick in top_picks:
+            if '태그' in pick and isinstance(pick['태그'], str):
+                try:
+                    pick['태그'] = json.loads(pick['태그'])
+                except:
+                    pick['태그'] = []
+
+        return df_result, top_picks, row["target_date"]
+
+    except Exception as e:
+        return None, None, None
