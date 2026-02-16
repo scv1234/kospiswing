@@ -306,45 +306,176 @@ def run_swing_analysis():
             raw_score = sector_score + supply_score + tech_score + momentum_score + fund_score + position_score
             score = round(min(100.0, raw_score), 1)
             
-            # 코멘트 조합 (우선순위: Top-Down 섹터 -> 수급 -> 기술 -> 펀더멘털)
-            final_comments = sector_comments + supply_comments + tech_comments + fund_comments
-            full_reason = " ".join(final_comments)
-            
-            if not full_reason:
-                full_reason = "수급과 차트 흐름이 양호하며, 추가적인 상승 여력이 기대되는 종목입니다."
-            
-            # --- 고도화된 목표가/손절가 (ATR 기반) ---
-            # True Range 계산
+            # --- 고도화된 목표가/손절가 (ATR 기반) --- (코멘트에서 참조하므로 먼저 계산)
             high_low = df_price['고가'] - df_price['저가']
             high_close = np.abs(df_price['고가'] - df_price['종가'].shift())
             low_close = np.abs(df_price['저가'] - df_price['종가'].shift())
             tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
             atr = tr.rolling(window=14).mean().iloc[-1]
-            
-            # 손절가: 20일 이평선 지지 or ATR 2배 하단 (더 타이트한 값 선택 - 손실 최소화)
-            # MA20이 너무 멀면 ATR로 끊고, 가까우면 MA20 지지 기대
+
             atr_stop = int(close - (atr * 2.0))
             ma_stop = int(ma20)
-            
-            # 둘 중 현재가에 더 가까운(높은) 가격을 손절가로 잡음 (보수적 접근)
-            # 단, 현재가보다 낮아야 함
             stop_candidates = [p for p in [atr_stop, ma_stop] if p < close]
             if stop_candidates:
                 stop_loss = max(stop_candidates)
             else:
-                stop_loss = int(close * 0.95) # 기본 5%
-            
-            # 목표가: 손익비 1:2 이상 (손절폭의 2배 수익 목표)
+                stop_loss = int(close * 0.95)
+
             risk = close - stop_loss
             target_price = int(close + (risk * 2.0))
-            
-            # 최소 목표수익률 보정 (너무 작으면 5%로)
             if (target_price - close) / close < 0.05:
                 target_price = int(close * 1.05)
-            
+
             target_rate = round((target_price - close) / close * 100, 1)
             stop_rate = round((stop_loss - close) / close * 100, 1)
-            
+
+            # ═══ 종합 AI 분석 코멘트 생성 (상세 버전) ═══
+            ret_5d = (close - df_price['종가'].iloc[-5]) / df_price['종가'].iloc[-5] * 100 if len(df_price) >= 5 else 0
+            ret_20d = (close - df_price['종가'].iloc[-20]) / df_price['종가'].iloc[-20] * 100 if len(df_price) >= 20 else 0
+
+            # ── 1. 종합 판정 헤더 ──
+            if score >= 60:
+                grade = "매우 강력한 매수 시그널"
+                grade_desc = "수급, 기술적 분석, 펀더멘털 모두 긍정적이며, 단기 스윙 트레이딩에 최적의 타이밍입니다."
+            elif score >= 45:
+                grade = "강한 매수 시그널"
+                grade_desc = "주요 지표들이 상승을 지지하고 있으며, 리스크 대비 기대수익이 우수합니다."
+            elif score >= 30:
+                grade = "관심 종목 (조건부 매수)"
+                grade_desc = "일부 지표가 긍정적이나, 추가 확인이 필요한 구간입니다. 분할 매수를 권장합니다."
+            else:
+                grade = "모니터링 단계"
+                grade_desc = "아직 확실한 시그널이 형성되지 않았으나, 추세 전환 시 빠르게 진입할 수 있도록 관찰이 필요합니다."
+
+            sections = []
+            sections.append(f"**[{grade}]** {grade_desc}")
+
+            # ── 2. 섹터 분석 ──
+            if sector_comments:
+                sections.append(f"\n**▶ 섹터 분석 ({sector_score:.0f}점)**: {' '.join(sector_comments)} 시장의 자금 흐름이 해당 업종으로 집중되고 있어, 업종 내 다른 종목 대비 초과 수익이 기대됩니다.")
+            elif sector:
+                sections.append(f"\n**▶ 섹터 분석**: '{sector}' 업종에 속해 있으나, 현재 수급 주도 섹터에는 포함되지 않았습니다. 개별 종목의 모멘텀에 집중할 필요가 있습니다.")
+
+            # ── 3. 수급 분석 ──
+            supply_detail = f"\n**▶ 수급 분석 ({supply_score:.1f}점)**: "
+            if is_foreign_buy and is_inst_buy:
+                supply_detail += f"외국인({f_amount/1e8:+,.0f}억)과 기관({i_amount/1e8:+,.0f}억)이 동시에 순매수하는 '쌍끌이' 패턴이 확인되었습니다. 이는 대형 투자 주체들이 동시에 이 종목에 확신을 갖고 진입하고 있다는 강력한 시그널입니다."
+                if is_indi_sell:
+                    supply_detail += " 동시에 개인 투자자가 매도하고 있어, 전형적인 '세력 매집 → 개인 이탈' 구조가 형성되었습니다. 역사적으로 이 패턴은 단기 상승 확률이 높습니다."
+            elif is_foreign_buy:
+                supply_detail += f"외국인이 {f_amount/1e8:+,.0f}억원을 순매수하고 있습니다. 외국인은 글로벌 자금 흐름과 환율을 고려하여 움직이기 때문에, 이들의 매수세는 중장기 상승의 선행 지표로 작용하는 경우가 많습니다."
+                if is_indi_sell:
+                    supply_detail += " 개인 매도 물량을 외국인이 흡수하며 수급 개선이 진행 중입니다."
+            elif is_inst_buy:
+                supply_detail += f"기관이 {i_amount/1e8:+,.0f}억원을 순매수하고 있습니다. 기관은 리서치 기반으로 투자하기 때문에, 펀더멘털 개선이나 실적 모멘텀을 선반영하고 있을 가능성이 높습니다."
+                if is_indi_sell:
+                    supply_detail += " 개인 물량을 기관이 받아내는 긍정적 손바뀜이 진행 중입니다."
+            else:
+                supply_detail += "당일 뚜렷한 수급 주체가 확인되지 않았습니다. 기술적 지표 위주로 판단하는 것이 적절합니다."
+            sections.append(supply_detail)
+
+            # ── 4. 기술적 분석 ──
+            tech_detail = f"\n**▶ 기술적 분석 ({tech_score:.1f}점)**:\n"
+            tech_items = []
+
+            # 이동평균선
+            if golden_cross:
+                spread = (close - ma60) / ma60 * 100 if ma60 > 0 else 0
+                tech_items.append(f"• **이동평균선 정배열**: 5일선({ma5:,.0f}) > 20일선({ma20:,.0f}) > 60일선({ma60:,.0f})으로 완벽한 정배열 상태입니다. 60일선 대비 +{spread:.1f}% 이격되어 있으며, 이는 중기 상승 추세가 건재함을 의미합니다.")
+            elif close > ma20 and ma5 > ma20:
+                tech_items.append(f"• **골든크로스 임박**: 5일선({ma5:,.0f})이 20일선({ma20:,.0f}) 위에 위치하며 상향 추세를 형성하고 있습니다. 60일선({ma60:,.0f}) 돌파 시 본격적인 상승 추세로 전환될 수 있습니다.")
+            elif close > ma20:
+                tech_items.append(f"• **20일선 지지**: 현재가({close:,}원)가 20일 이동평균선({ma20:,.0f}원) 위에 있어 단기 지지가 유효합니다.")
+            else:
+                tech_items.append(f"• **이동평균선**: 현재가({close:,}원)가 20일선({ma20:,.0f}원) 하단에 위치해 있어, 이평선 회복 여부를 주시해야 합니다.")
+
+            # 거래량
+            if vol_ratio >= 2.0:
+                tech_items.append(f"• **거래량 폭증**: 20일 평균 대비 {vol_ratio:.1f}배로 거래량이 폭발적으로 증가했습니다. 이는 새로운 매수세가 대거 유입되고 있음을 의미하며, 추세 전환 또는 강화의 강력한 신호입니다.")
+            elif vol_ratio >= 1.5:
+                tech_items.append(f"• **거래량 급증**: 20일 평균 대비 {vol_ratio:.1f}배의 거래량이 발생했습니다. 평소보다 높은 거래 참여도는 가격 방향성에 대한 시장의 확신을 반영합니다.")
+            elif vol_ratio >= 1.2:
+                tech_items.append(f"• **거래량 소폭 증가**: 20일 평균 대비 {vol_ratio:.1f}배로 다소 활발한 거래가 이루어지고 있습니다.")
+            else:
+                tech_items.append(f"• **거래량**: 20일 평균 대비 {vol_ratio:.1f}배로 평이한 수준입니다. 거래량 동반 없는 상승은 지속성에 의문이 있을 수 있습니다.")
+
+            # RSI
+            if rsi_val <= 30:
+                tech_items.append(f"• **RSI {rsi_val:.0f} (과매도)**: 극단적 과매도 영역에 진입하여 기술적 반등 가능성이 높습니다. 다만, 추세적 하락 중 과매도가 지속될 수 있으므로 거래량 반등을 동반하는지 확인이 필요합니다.")
+            elif rsi_val <= 45:
+                tech_items.append(f"• **RSI {rsi_val:.0f} (눌림목)**: 과매도 구간을 벗어나 반등을 모색하는 '눌림목' 구간입니다. 스윙 트레이딩의 교과서적인 매수 타이밍에 해당하며, 리스크 대비 기대수익이 높은 구간입니다.")
+            elif rsi_val <= 60:
+                tech_items.append(f"• **RSI {rsi_val:.0f} (중립~강세)**: 과열 없이 건전한 상승 추세를 유지하고 있습니다. 추가 상승 여력이 충분한 구간입니다.")
+            elif rsi_val <= 75:
+                tech_items.append(f"• **RSI {rsi_val:.0f} (강세)**: 강한 상승 모멘텀이 유지되고 있으나, 70 이상에서는 차익실현 매물이 나올 수 있어 분할 매수/매도 전략이 권장됩니다.")
+            else:
+                tech_items.append(f"• **RSI {rsi_val:.0f} (과매수 주의)**: RSI가 75를 넘어 과매수 영역에 진입했습니다. 단기적으로 조정 가능성이 있으며, 신규 진입보다는 기존 보유자의 일부 차익실현이 적절할 수 있습니다.")
+
+            # 캔들 패턴
+            if daily_chg > 5 and body_len > upper_tail * 2:
+                tech_items.append(f"• **캔들 패턴 (장대양봉)**: 전일 대비 +{daily_chg:.1f}% 상승하며 강한 장대양봉이 형성되었습니다. 매수세가 장중 내내 지속되었음을 의미하며, 향후 추가 상승 모멘텀이 기대됩니다.")
+            elif daily_chg > 2 and close > open_p:
+                tech_items.append(f"• **캔들 패턴 (양봉)**: 전일 대비 +{daily_chg:.1f}% 상승하며 안정적인 양봉이 형성되었습니다.")
+            elif upper_tail > body_len * 2 and daily_chg > 0:
+                tech_items.append(f"• **캔들 패턴 (윗꼬리)**: 장중 매물대를 테스트했으나 소화 과정으로 보이며, 돌파 시도가 진행 중입니다.")
+
+            tech_detail += "\n".join(tech_items)
+            sections.append(tech_detail)
+
+            # ── 5. 모멘텀 분석 ──
+            momentum_detail = f"\n**▶ 모멘텀 분석 ({momentum_score:.1f}점)**: "
+            if ret_5d > 5 and ret_20d > 10:
+                momentum_detail += f"5일 수익률 +{ret_5d:.1f}%, 20일 수익률 +{ret_20d:.1f}%로 단기·중기 모멘텀이 모두 매우 강합니다. 상승 추세가 가속화되고 있으며, 추세 추종 매매에 유리합니다."
+            elif ret_5d > 3:
+                momentum_detail += f"5일 수익률 +{ret_5d:.1f}%로 단기 모멘텀이 양호합니다. 20일 수익률은 {ret_20d:+.1f}%입니다."
+            elif ret_5d > 0:
+                momentum_detail += f"5일 수익률 +{ret_5d:.1f}%, 20일 수익률 {ret_20d:+.1f}%로 완만한 상승세를 보이고 있습니다."
+            else:
+                momentum_detail += f"5일 수익률 {ret_5d:+.1f}%로 단기 조정 국면입니다. 20일 수익률({ret_20d:+.1f}%)을 감안하면 눌림목 매수 기회일 수 있습니다."
+            sections.append(momentum_detail)
+
+            # ── 6. 펀더멘털 ──
+            fund_detail = f"\n**▶ 펀더멘털 ({fund_score:.1f}점)**: "
+            if pbr > 0:
+                if pbr < 0.7:
+                    fund_detail += f"PBR {pbr:.2f}배로 자산가치 대비 심하게 저평가되어 있습니다. 청산가치보다 시가총액이 낮은 상태로, 하방 경직성이 매우 높습니다."
+                elif pbr < 1.0:
+                    fund_detail += f"PBR {pbr:.2f}배로 자산가치 대비 저평가 영역입니다. 가치투자 관점에서도 매력적인 구간입니다."
+                elif pbr < 2.0:
+                    fund_detail += f"PBR {pbr:.2f}배로 적정 수준입니다."
+                else:
+                    fund_detail += f"PBR {pbr:.2f}배로 다소 높은 밸류에이션입니다. 성장성이 뒷받침되는지 확인이 필요합니다."
+            else:
+                fund_detail += "PBR 데이터를 확인할 수 없습니다."
+            if div > 0:
+                fund_detail += f" 배당수익률 {div:.1f}%로 {'매력적인 배당 수익' if div >= 3 else '소폭의 배당 수익'}이 추가됩니다."
+            sections.append(fund_detail)
+
+            # ── 7. 가격 위치 & 매매 전략 ──
+            strategy = f"\n**▶ 매매 전략**: "
+            strategy += f"목표가 {target_price:,}원(+{target_rate:.1f}%), 손절가 {stop_loss:,}원({stop_rate:.1f}%)으로 "
+            rr_ratio = abs(target_rate / stop_rate) if stop_rate != 0 else 0
+            strategy += f"손익비 1:{rr_ratio:.1f}입니다. "
+
+            if from_high >= 95:
+                strategy += f"현재 60일 고점({high_60d:,.0f}원) 대비 {from_high:.0f}% 수준으로 고점 돌파를 시도하고 있어, 돌파 시 급등 가능성이 있습니다. "
+            elif from_high >= 85:
+                strategy += f"60일 고점({high_60d:,.0f}원) 대비 {from_high:.0f}% 수준으로 고점까지 여유가 있어 추가 상승 여력이 충분합니다. "
+
+            if ma20_gap > 0:
+                strategy += f"20일선 대비 +{ma20_gap:.1f}% 이격 중이며, "
+                if ma20_gap <= 3:
+                    strategy += "이평선 근접 매수로 손절 리스크가 낮은 구간입니다."
+                elif ma20_gap <= 7:
+                    strategy += "적정 이격 구간에서 상승 추세를 유지하고 있습니다."
+                else:
+                    strategy += "이격이 다소 벌어져 있어 단기 조정 시 추가 매수 전략이 유효합니다."
+            else:
+                strategy += f"20일선 하단({ma20_gap:+.1f}%)에 위치해 있어, 이평선 회복 확인 후 진입이 안전합니다."
+            sections.append(strategy)
+
+            full_reason = "\n".join(sections)
+
             # 최소 점수 20점 이상 (기준 대폭 완화: 웬만하면 포착되도록)
             if score >= 20:
                 # 종목명 가져오기
