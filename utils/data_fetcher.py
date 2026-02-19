@@ -80,21 +80,32 @@ def get_ticker_mapping():
 
 @st.cache_data(ttl=3600)
 def get_latest_business_day():
-    """최근 유효 거래일 (KST 기준, 클라우드 호환)"""
-    date = _now_kst()
-    
-    # 1. 시간 체크 (장 마감 전에는 전일 데이터 사용)
-    if date.hour < 15 or (date.hour == 15 and date.minute < 40):
+    """최근 유효 거래일 (KST 기준, 클라우드 호환)
+    - 장중(09:00~15:40 평일): 오늘 날짜 우선 시도, 데이터 없으면 전일 fallback
+    - 장 마감 후 / 주말: 가장 최근 거래일 반환
+    """
+    now = _now_kst()
+    date = now
+
+    is_weekday = date.weekday() < 5
+    is_market_hours = is_weekday and (
+        (date.hour > 9 or (date.hour == 9 and date.minute >= 0)) and
+        (date.hour < 15 or (date.hour == 15 and date.minute < 40))
+    )
+
+    # 장중이면 오늘부터 시도, 장 마감 후이면 오늘부터 시도 (마감 데이터 있으므로)
+    # 장 시작 전(~09:00)이면 전일부터 시도
+    if is_weekday and date.hour < 9:
         date -= timedelta(days=1)
 
-    # 2. 주말 처리
+    # 주말 처리
     if date.weekday() == 5:
         date -= timedelta(days=1)
     elif date.weekday() == 6:
         date -= timedelta(days=2)
-    
-    # 3. pykrx로 데이터 유무 확인 (최대 7일)
-    for _ in range(7): 
+
+    # pykrx로 데이터 유무 확인 (최대 7일)
+    for _ in range(7):
         str_date = date.strftime("%Y%m%d")
         try:
             df = stock.get_index_ohlcv(str_date, str_date, "1001")
@@ -102,7 +113,7 @@ def get_latest_business_day():
                 return str_date
         except:
             pass
-        
+
         # FDR fallback 체크
         try:
             fdr_date = date.strftime("%Y-%m-%d")
@@ -111,16 +122,16 @@ def get_latest_business_day():
                 return str_date
         except:
             pass
-        
+
         date -= timedelta(days=1)
         # 주말 건너뛰기
         if date.weekday() == 6:
             date -= timedelta(days=2)
         elif date.weekday() == 5:
             date -= timedelta(days=1)
-        
-    # 4. 최종 Fallback
-    date = _now_kst() - timedelta(days=1)
+
+    # 최종 Fallback
+    date = now - timedelta(days=1)
     while date.weekday() >= 5:
         date -= timedelta(days=1)
     return date.strftime("%Y%m%d")
