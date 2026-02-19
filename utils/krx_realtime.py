@@ -1,15 +1,17 @@
 """
 KRX 실시간 데이터 모듈
-- 장중(09:00~15:30): KRX 직접 API + Naver Finance fallback
-- pykrx가 오후 6시 이후에만 당일 데이터를 제공하는 한계를 극복
+- 장중(09:00~15:30): Naver Finance 스크래핑 (1순위) + KRX 직접 API (2순위)
+- 장 마감 후(18:00+): pykrx fallback (data_fetcher.py에서 처리)
 """
 import pandas as pd
 import requests
-from io import BytesIO
+from bs4 import BeautifulSoup
+from io import StringIO
 from datetime import datetime, timedelta, timezone
-import time
+import re
 
 KST = timezone(timedelta(hours=9))
+
 
 # ═══════════════════════════════════════
 # 장중 여부 판별
@@ -17,7 +19,7 @@ KST = timezone(timedelta(hours=9))
 def is_market_open():
     """현재 장중인지 판별 (KST 기준 평일 09:00~15:30)"""
     now = datetime.now(KST)
-    if now.weekday() >= 5:  # 주말
+    if now.weekday() >= 5:
         return False
     hour, minute = now.hour, now.minute
     if hour < 9 or (hour == 15 and minute >= 30) or hour > 15:
@@ -30,33 +32,150 @@ def _now_kst():
 
 
 # ═══════════════════════════════════════
-# KRX 직접 JSON API (pykrx 내부 엔드포인트)
+# Naver Finance 스크래핑 (장중 실시간 — 1순위)
+# ═══════════════════════════════════════
+NAVER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+}
+
+NAVER_INVESTOR_MAP = {
+    "외국인": "01",
+    "기관합계": "02",
+}
+
+
+def _parse_naver_number(text):
+    """네이버 숫자 문자열을 float으로 변환 (쉼표, +, - 처리)"""
+    if not text:
+        return 0
+    text = str(text).strip().replace(",", "").replace("+", "")
+    try:
+        return float(text)
+    except (ValueError, TypeError):
+        return 0
+
+
+def fetch_naver_investor_trading(investor="외국인"):
+    """
+    네이버증권 투자자별 매매상위 종목 (장중 실시간)
+    BeautifulSoup으로 안정적 파싱
+
+    URL: https://finance.naver.com/sise/sise_deal.naver?sosok={01|02}&type={buy|sell}
+    테이블 구조: 종목명(링크포함) | 현재가 | 전일비 | 등락률 | 매도거래량 | 매수거래량 | 순매수거래량 | 거래량
+
+    Returns: pykrx 호환 DataFrame
+    """
+    sosok = NAVER_INVESTOR_MAP.get(investor)
+    if not sosok:
+        return pd.DataFrame()
+
+    all_records = []
+
+    for trade_type in ["buy", "sell"]:
+        url = f"https://finance.naver.com/sise/sise_deal.naver?sosok={sosok}&type={trade_type}"
+        try:
+            resp = requests.get(url, headers=NAVER_HEADERS, timeout=10)
+            resp.encoding = "euc-kr"
+            soup = BeautifulSoup(resp.text, "lxml")
+
+            # 데이터 테이블 찾기: class="type_5" 또는 "type2"
+            table = soup.select_one("table.type_5, table.type2, table.type_1")
+            if not table:
+                # 모든 테이블 중에서 가장 행이 많은 테이블
+                tables = soup.select("table")
+                table = max(tables, key=lambda t: len(t.select("tr")), default=None)
+
+            if not table:
+                continue
+
+            rows = table.select("tr")
+
+            for row in rows:
+                tds = row.select("td")
+                if len(tds) < 4:
+                    continue
+
+                # 종목명과 코드 추출
+                link = row.select_one("a[href*='code=']")
+                if not link:
+                    continue
+
+                name = link.get_text(strip=True)
+                href = link.get("href", "")
+                code_match = re.search(r"code=(\d{6})", href)
+                if not code_match:
+                    continue
+                code = code_match.group(1)
+
+                # 숫자 데이터 추출 (td 요소들)
+                nums = []
+                for td in tds:
+                    text = td.get_text(strip=True).replace(",", "").replace("+", "").replace("%", "")
+                    # 종목명 td 건너뛰기
+                    if td.select_one("a[href*='code=']"):
+                        continue
+                    try:
+                        nums.append(float(text))
+                    except (ValueError, TypeError):
+                        nums.append(None)
+
+                # nums 순서: [현재가, 전일비, 등락률, 매도거래량, 매수거래량, 순매수거래량, 거래량]
+                # 또는: [순위, 현재가, 전일비, 등락률, ...]
+                price = 0
+                net_vol = 0
+                change_pct = 0
+
+                # 유효한 숫자만 필터
+                valid_nums = [n for n in nums if n is not None]
+
+                if len(valid_nums) >= 4:
+                    # 첫 번째 큰 숫자가 현재가 (보통 수천~수십만)
+                    # 마지막에서 두 번째가 순매수거래량
+                    price = valid_nums[0] if valid_nums[0] and valid_nums[0] > 100 else (valid_nums[1] if len(valid_nums) > 1 else 0)
+                    net_vol = valid_nums[-2] if len(valid_nums) >= 2 else 0
+
+                if trade_type == "sell":
+                    net_vol = -abs(net_vol) if net_vol else 0
+
+                # 순매수거래대금 추정 (거래량 * 현재가)
+                net_val = net_vol * price if price else 0
+
+                all_records.append({
+                    "종목코드": code,
+                    "종목명": name,
+                    "순매수거래량": int(net_vol),
+                    "순매수거래대금": int(net_val),
+                    "현재가": int(price) if price else 0,
+                })
+
+        except Exception as e:
+            print(f"[Naver] Error ({investor}/{trade_type}): {e}")
+
+    if not all_records:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_records)
+    df = df.drop_duplicates(subset="종목코드", keep="first")
+    df = df.set_index("종목코드")
+    df = df.sort_values("순매수거래대금", ascending=False)
+
+    return df
+
+
+# ═══════════════════════════════════════
+# KRX 직접 JSON API (2순위)
 # ═══════════════════════════════════════
 KRX_API_URL = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
 
-# 투자자 유형 코드 매핑
 INVESTOR_CODE_MAP = {
-    "금융투자": "1000",
-    "보험": "2000",
-    "투신": "3000",
-    "사모": "3100",
-    "은행": "4000",
-    "기타금융": "5000",
-    "연기금": "6000",
-    "기관합계": "7050",
-    "기타법인": "7100",
-    "개인": "8000",
-    "외국인": "9000",
-    "기타외국인": "9001",
+    "금융투자": "1000", "보험": "2000", "투신": "3000",
+    "사모": "3100", "은행": "4000", "기타금융": "5000",
+    "연기금": "6000", "기관합계": "7050", "기타법인": "7100",
+    "개인": "8000", "외국인": "9000", "기타외국인": "9001",
     "전체": "9999",
 }
 
-# 시장 코드 매핑
-MARKET_CODE_MAP = {
-    "KOSPI": "STK",
-    "KOSDAQ": "KSQ",
-    "ALL": "ALL",
-}
+MARKET_CODE_MAP = {"KOSPI": "STK", "KOSDAQ": "KSQ", "ALL": "ALL"}
 
 KRX_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -68,223 +187,73 @@ KRX_HEADERS = {
 
 
 def fetch_krx_investor_net_purchases(date_str, market="KOSPI", investor="외국인"):
-    """
-    KRX 직접 JSON API로 투자자별 순매수 상위종목 조회
-    pykrx 내부와 동일한 엔드포인트 사용 (bld=MDCSTAT02401)
-    장중에도 데이터 반환 가능
-
-    Returns: DataFrame with columns [종목코드, 종목명, 순매수거래대금, 순매수거래량, ...]
-    """
+    """KRX 직접 JSON API — 장중에는 빈 데이터 반환 가능 (18시 이후 확정)"""
     mkt_code = MARKET_CODE_MAP.get(market, "STK")
     inv_code = INVESTOR_CODE_MAP.get(investor, "9000")
 
     params = {
         "bld": "dbms/MDC/STAT/standard/MDCSTAT02401",
         "locale": "ko_KR",
-        "mktId": mkt_code,
-        "invstTpCd": inv_code,
-        "strtDd": date_str,
-        "endDd": date_str,
-        "share": "1",
-        "money": "1",
-        "csvxls_isNo": "false",
+        "mktId": mkt_code, "invstTpCd": inv_code,
+        "strtDd": date_str, "endDd": date_str,
+        "share": "1", "money": "1", "csvxls_isNo": "false",
     }
 
     try:
         resp = requests.post(KRX_API_URL, data=params, headers=KRX_HEADERS, timeout=10)
         resp.raise_for_status()
-
         data = resp.json()
+
         if "output" not in data or not data["output"]:
             return pd.DataFrame()
 
         df = pd.DataFrame(data["output"])
-
-        # 컬럼명 정리 (KRX JSON 응답 컬럼)
         col_map = {
-            "ISU_SRT_CD": "종목코드",
-            "ISU_ABBRV": "종목명",
-            "NETBID_TRDVAL": "순매수거래대금",
-            "NETBID_TRDVOL": "순매수거래량",
-            "TDD_CLSPRC": "종가",
-            "FLUC_RT": "등락률",
-            "CMPPREVDD_PRC": "대비",
+            "ISU_SRT_CD": "종목코드", "ISU_ABBRV": "종목명",
+            "NETBID_TRDVAL": "순매수거래대금", "NETBID_TRDVOL": "순매수거래량",
+            "TDD_CLSPRC": "종가", "FLUC_RT": "등락률", "CMPPREVDD_PRC": "대비",
         }
-
         df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
 
-        # 숫자 컬럼 변환 (쉼표 제거)
-        numeric_cols = ["순매수거래대금", "순매수거래량", "종가", "등락률", "대비"]
-        for col in numeric_cols:
+        for col in ["순매수거래대금", "순매수거래량", "종가", "등락률", "대비"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", ""), errors="coerce")
 
-        # 종목코드를 인덱스로
         if "종목코드" in df.columns:
             df = df.set_index("종목코드")
-
         return df
 
     except Exception as e:
-        print(f"[KRX Direct API] Error: {e}")
+        print(f"[KRX API] Error: {e}")
         return pd.DataFrame()
 
 
 # ═══════════════════════════════════════
-# KRX OTP 방식 (CSV 다운로드) - 백업용
-# ═══════════════════════════════════════
-def fetch_krx_investor_net_purchases_csv(date_str, market="KOSPI", investor="외국인"):
-    """
-    KRX OTP 방식으로 투자자별 순매수 상위종목 CSV 다운로드
-    JSON API가 실패할 경우 fallback
-    """
-    mkt_code = MARKET_CODE_MAP.get(market, "STK")
-    inv_code = INVESTOR_CODE_MAP.get(investor, "9000")
-
-    try:
-        # Step 1: OTP 발급
-        gen_url = "https://data.krx.co.kr/comm/fileDn/GenerateOTP/generate.cmd"
-        gen_data = {
-            "locale": "ko_KR",
-            "mktId": mkt_code,
-            "invstTpCd": inv_code,
-            "strtDd": date_str,
-            "endDd": date_str,
-            "share": "1",
-            "money": "1",
-            "csvxls_isNo": "false",
-            "name": "fileDown",
-            "url": "dbms/MDC/STAT/standard/MDCSTAT02401",
-        }
-
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201020303",
-        }
-
-        otp_resp = requests.post(gen_url, data=gen_data, headers=headers, timeout=10)
-        otp = otp_resp.text
-
-        # Step 2: CSV 다운로드
-        down_url = "https://data.krx.co.kr/comm/fileDn/download_csv/download.cmd"
-        csv_resp = requests.post(down_url, data={"code": otp}, headers=headers, timeout=15)
-
-        # EUC-KR로 디코딩
-        df = pd.read_csv(BytesIO(csv_resp.content), encoding="EUC-KR")
-
-        if df.empty:
-            return pd.DataFrame()
-
-        # 컬럼명 정리
-        col_map = {
-            "종목코드": "종목코드",
-            "종목명": "종목명",
-            "순매수거래대금": "순매수거래대금",
-            "순매수거래량": "순매수거래량",
-        }
-
-        if "종목코드" in df.columns:
-            df = df.set_index("종목코드")
-
-        return df
-
-    except Exception as e:
-        print(f"[KRX CSV API] Error: {e}")
-        return pd.DataFrame()
-
-
-# ═══════════════════════════════════════
-# Naver Finance 스크래핑 (장중 실시간 확실)
-# ═══════════════════════════════════════
-NAVER_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-}
-
-
-def fetch_naver_investor_by_stock(code, pages=1):
-    """
-    네이버증권 종목별 외국인/기관 순매매 데이터
-    URL: https://finance.naver.com/item/frgn.naver?code={code}
-    장중 실시간 데이터 제공
-    """
-    url = f"https://finance.naver.com/item/frgn.naver?code={code}&page=1"
-    try:
-        dfs = pd.read_html(url, encoding="euc-kr")
-        if dfs:
-            df = dfs[0].dropna(how="all")
-            return df
-    except Exception as e:
-        print(f"[Naver] Error for {code}: {e}")
-    return pd.DataFrame()
-
-
-def fetch_naver_sise_investor_top(investor_type="foreign"):
-    """
-    네이버증권 투자자별 매매상위 종목 (장중 실시간)
-    investor_type: "foreign" (외국인), "institution" (기관), "individual" (개인)
-
-    URL patterns:
-    - 외국인 매매상위: https://finance.naver.com/sise/sise_deal.naver?sosok=01&type=buy (순매수), sell (순매도)
-    - 기관 매매상위: https://finance.naver.com/sise/sise_deal.naver?sosok=02&type=buy
-    - 전체 투자자별: https://finance.naver.com/sise/investorDealTrendDay.naver
-    """
-    # sosok: 01=외국인, 02=기관, 00=개인은 별도 처리
-    sosok_map = {
-        "foreign": "01",
-        "외국인": "01",
-        "institution": "02",
-        "기관합계": "02",
-    }
-
-    sosok = sosok_map.get(investor_type, "01")
-
-    results = []
-
-    for trade_type in ["buy", "sell"]:
-        url = f"https://finance.naver.com/sise/sise_deal.naver?sosok={sosok}&type={trade_type}"
-        try:
-            dfs = pd.read_html(url, encoding="euc-kr", header=0)
-            for df in dfs:
-                df = df.dropna(how="all")
-                if len(df) > 1:
-                    df["매매구분"] = "순매수" if trade_type == "buy" else "순매도"
-                    results.append(df)
-        except Exception as e:
-            print(f"[Naver sise_deal] Error ({trade_type}): {e}")
-
-    if results:
-        return pd.concat(results, ignore_index=True)
-    return pd.DataFrame()
-
-
-# ═══════════════════════════════════════
-# 통합 실시간 데이터 함수
+# 통합 함수
 # ═══════════════════════════════════════
 def get_realtime_net_purchases(date_str, market="KOSPI", investor="외국인"):
     """
-    실시간 투자자별 순매수 데이터 (장중/마감 자동 분기)
-
-    시도 순서:
-    1. KRX 직접 JSON API (가장 정확)
-    2. KRX CSV OTP 방식 (JSON 실패 시)
-    3. Naver Finance 스크래핑 (최후 fallback)
-
-    Returns: DataFrame (pykrx 호환 형식)
+    실시간 투자자별 순매수 데이터
+    1순위: Naver Finance (장중 확실)
+    2순위: KRX 직접 API (마감 후)
     """
-    # 1순위: KRX JSON API
-    df = fetch_krx_investor_net_purchases(date_str, market, investor)
-    if df is not None and not df.empty:
-        return df
-
-    # 2순위: KRX CSV
-    df = fetch_krx_investor_net_purchases_csv(date_str, market, investor)
-    if df is not None and not df.empty:
-        return df
-
-    # 3순위: Naver Finance (외국인/기관만 지원)
+    # 1순위: Naver Finance
     if investor in ("외국인", "기관합계"):
-        df = fetch_naver_sise_investor_top(investor)
+        try:
+            df = fetch_naver_investor_trading(investor)
+            if df is not None and not df.empty:
+                print(f"[Realtime] Naver 성공: {investor} {len(df)}종목")
+                return df
+        except Exception as e:
+            print(f"[Realtime] Naver 실패: {e}")
+
+    # 2순위: KRX API
+    try:
+        df = fetch_krx_investor_net_purchases(date_str, market, investor)
         if df is not None and not df.empty:
+            print(f"[Realtime] KRX 성공: {investor} {len(df)}종목")
             return df
+    except Exception as e:
+        print(f"[Realtime] KRX 실패: {e}")
 
     return pd.DataFrame()
