@@ -30,20 +30,38 @@ def run_swing_analysis():
     start_90d = (datetime.strptime(target_date, "%Y%m%d") - timedelta(days=120)).strftime("%Y%m%d")
 
     # 2. 수급 분석 (외국인+기관+개인 체크)
+    #    장중: KRX 직접 API → pykrx fallback
     try:
-        # pykrx 원본 데이터 사용 (전체 데이터 조회)
-        df_foreign = stock.get_market_net_purchases_of_equities(target_date, target_date, "KOSPI", "외국인")
-        df_inst = stock.get_market_net_purchases_of_equities(target_date, target_date, "KOSPI", "기관합계")
-        df_indi = stock.get_market_net_purchases_of_equities(target_date, target_date, "KOSPI", "개인")
-        
-        if df_foreign.empty or df_inst.empty:
+        from utils.krx_realtime import get_realtime_net_purchases, is_market_open
+
+        # KRX 실시간 API 우선 시도
+        df_foreign = get_realtime_net_purchases(target_date, "KOSPI", "외국인")
+        df_inst = get_realtime_net_purchases(target_date, "KOSPI", "기관합계")
+        df_indi = get_realtime_net_purchases(target_date, "KOSPI", "개인")
+
+        # 실시간 API 실패 시 pykrx fallback
+        if df_foreign is None or df_foreign.empty:
+            df_foreign = stock.get_market_net_purchases_of_equities(target_date, target_date, "KOSPI", "외국인")
+        if df_inst is None or df_inst.empty:
+            df_inst = stock.get_market_net_purchases_of_equities(target_date, target_date, "KOSPI", "기관합계")
+        if df_indi is None or df_indi.empty:
+            df_indi = stock.get_market_net_purchases_of_equities(target_date, target_date, "KOSPI", "개인")
+
+        if (df_foreign is None or df_foreign.empty) or (df_inst is None or df_inst.empty):
             st.error(f"수급 데이터가 비어있습니다. (Date: {target_date})")
             return pd.DataFrame(), []
+
+        data_mode = "🟢 실시간" if is_market_open() else "확정"
+        st.info(f"수급 데이터 로드 완료 ({data_mode})")
             
         # 순매수/순매도 포지션 확인 (Ticker Set)
-        foreign_buy = set(df_foreign[df_foreign["순매수거래량"] > 0].index)
-        inst_buy = set(df_inst[df_inst["순매수거래량"] > 0].index)
-        indi_sell = set(df_indi[df_indi["순매수거래량"] < 0].index) # 개인이 파는 종목
+        # KRX API는 '순매수거래량', pykrx는 '순매수거래량' — 동일하지만 방어 처리
+        vol_col = "순매수거래량" if "순매수거래량" in df_foreign.columns else "순매수거래대금"
+        foreign_buy = set(df_foreign[df_foreign[vol_col] > 0].index)
+        vol_col_i = "순매수거래량" if "순매수거래량" in df_inst.columns else "순매수거래대금"
+        inst_buy = set(df_inst[df_inst[vol_col_i] > 0].index)
+        vol_col_d = "순매수거래량" if "순매수거래량" in df_indi.columns else "순매수거래대금"
+        indi_sell = set(df_indi[df_indi[vol_col_d] < 0].index) # 개인이 파는 종목
         
         # 분석 대상: 외국인 or 기관 순매수 상위 50 종목
         top_foreign = set(df_foreign.sort_values('순매수거래대금', ascending=False).head(50).index)

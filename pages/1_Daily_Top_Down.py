@@ -9,12 +9,19 @@ import os
 # utils 경로 추가
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils.data_fetcher import get_latest_business_day, get_kospi_chart_data, get_market_net_purchases, get_exchange_rate_data, get_global_indices, get_sector_returns
+from utils.krx_realtime import is_market_open
 
 st.header("📊 Daily Top-Down Report")
 
 # 날짜 설정
 target_date = get_latest_business_day()
-st.caption(f"기준 데이터: {target_date} (최근 유효 거래일)")
+
+# 장중/마감 상태 표시
+if is_market_open():
+    st.caption(f"🟢 **장중 실시간** | 기준일: {target_date} | 3분 간격 자동 캐시 갱신")
+    st.toast("장중 실시간 데이터 모드", icon="🟢")
+else:
+    st.caption(f"🔴 장 마감 | 기준일: {target_date} (확정 데이터)")
 
 # 1. 거시경제 지표 (Metric Cards)
 st.subheader("1. 거시경제 (Macro)")

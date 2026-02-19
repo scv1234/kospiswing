@@ -8,8 +8,14 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils.analysis import run_swing_analysis
 
+from utils.krx_realtime import is_market_open
+
 st.header("🚀 Swing Trading Report")
-st.caption("알고리즘 기반 스윙 종목 추천 (Foreign/Inst Net Buy + Tech Signals)")
+
+if is_market_open():
+    st.caption("🟢 **장중 실시간 모드** | 알고리즘 기반 스윙 종목 추천 (Foreign/Inst Net Buy + Tech Signals)")
+else:
+    st.caption("🔴 장 마감 | 알고리즘 기반 스윙 종목 추천 (Foreign/Inst Net Buy + Tech Signals)")
 
 # session_state로 분석 결과 캐싱
 if 'swing_result' not in st.session_state:

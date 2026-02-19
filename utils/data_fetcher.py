@@ -182,17 +182,47 @@ def get_exchange_rate_data(symbol="USD/KRW", days=60):
     except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=600)
+def _get_cache_ttl():
+    """장중에는 캐시를 짧게 (3분), 마감 후에는 길게 (10분)"""
+    from utils.krx_realtime import is_market_open
+    return 180 if is_market_open() else 600
+
+@st.cache_data(ttl=180)
 def get_market_net_purchases(date, market="KOSPI", investor="외국인", top_n=30):
-    """일자별 순매수/순매도 데이터"""
+    """일자별 순매수/순매도 데이터
+    - 장중: KRX 직접 API → Naver Finance fallback
+    - 장 마감 후(18:00+): pykrx 사용
+    """
+    from utils.krx_realtime import is_market_open, get_realtime_net_purchases
+
+    df = pd.DataFrame()
+    data_source = "none"
+
+    # ── 1순위: KRX 직접 API (장중/마감 모두 시도) ──
     try:
-        df = stock.get_market_net_purchases_of_equities(date, date, market, investor)
-        if df is None or df.empty:
-            return pd.DataFrame()
-            
-        df = df.sort_values(by="순매수거래대금", ascending=False)
-        
-        # 등락률 정보 추가
+        df = get_realtime_net_purchases(date, market, investor)
+        if df is not None and not df.empty:
+            data_source = "krx_realtime"
+    except Exception:
+        pass
+
+    # ── 2순위: pykrx (마감 후 확정 데이터) ──
+    if df is None or df.empty:
+        try:
+            df = stock.get_market_net_purchases_of_equities(date, date, market, investor)
+            if df is not None and not df.empty:
+                data_source = "pykrx"
+        except Exception:
+            pass
+
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    # ── 데이터 정규화 (소스에 따라 컬럼명 통일) ──
+    df = df.sort_values(by="순매수거래대금", ascending=False)
+
+    # 등락률 정보 추가 (없는 경우)
+    if '등락률' not in df.columns:
         try:
             df_ohlcv = stock.get_market_ohlcv(date, market=market)
             if df_ohlcv is not None and not df_ohlcv.empty and '등락률' in df_ohlcv.columns:
@@ -201,31 +231,41 @@ def get_market_net_purchases(date, market="KOSPI", investor="외국인", top_n=3
                 df['등락률'] = 0.0
         except:
             df['등락률'] = 0.0
-        
-        # 종목명, 업종 매핑
-        mapping = get_ticker_mapping()
-        
-        if mapping is not None and not mapping.empty:
-            if 'Sector' not in mapping.columns:
-                mapping['Sector'] = ""
+
+    # 종목명 추가 (KRX API에서 이미 제공하는 경우 스킵)
+    if '종목명' not in df.columns:
+        try:
+            mapping = get_ticker_mapping()
+            if mapping is not None and not mapping.empty:
+                if 'Name' in mapping.columns:
+                    df = df.join(mapping[['Name']], how='left')
+                    df = df.rename(columns={'Name': '종목명'})
+        except:
+            pass
+
+    # 종목명, 업종 매핑
+    mapping = get_ticker_mapping()
+
+    if mapping is not None and not mapping.empty:
+        if 'Sector' not in mapping.columns:
+            mapping['Sector'] = ""
+        if 'Sector' not in df.columns:
             df = df.join(mapping[['Sector']], how='left')
-        else:
+    else:
+        if 'Sector' not in df.columns:
             df['Sector'] = ""
-        
-        # 컬럼 정제
-        cols = ['종목명', 'Sector', '순매수거래대금', '등락률']
-        valid_cols = [c for c in cols if c in df.columns]
-        result = df[valid_cols].copy()
-        
-        if '순매수거래대금' in result.columns:
-            result['순매수(억)'] = (result['순매수거래대금'] / 1e8).round(1)
-        
-        if top_n:
-            return result.head(top_n)
-        return result
-        
-    except Exception:
-        return pd.DataFrame()
+
+    # 컬럼 정제
+    cols = ['종목명', 'Sector', '순매수거래대금', '등락률']
+    valid_cols = [c for c in cols if c in df.columns]
+    result = df[valid_cols].copy()
+
+    if '순매수거래대금' in result.columns:
+        result['순매수(억)'] = (result['순매수거래대금'] / 1e8).round(1)
+
+    if top_n:
+        return result.head(top_n)
+    return result
 
 @st.cache_data(ttl=600)
 def get_leading_sectors(date, market="KOSPI", top_n=5):
