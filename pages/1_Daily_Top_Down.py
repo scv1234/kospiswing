@@ -26,18 +26,24 @@ with st.spinner('데이터 로딩 중...'):
     global_indices = get_global_indices(days=10)
 
 # 지표 계산
-if not kospi_df.empty:
+if len(kospi_df) >= 2:
     kospi_now = kospi_df['종가'].iloc[-1]
     kospi_prev = kospi_df['종가'].iloc[-2]
     kospi_delta = kospi_now - kospi_prev
     kospi_pct = (kospi_delta / kospi_prev) * 100
+elif len(kospi_df) == 1:
+    kospi_now = kospi_df['종가'].iloc[-1]
+    kospi_delta, kospi_pct = 0, 0
 else:
     kospi_now, kospi_delta, kospi_pct = 0, 0, 0
 
-if not ex_df.empty:
+if len(ex_df) >= 2:
     ex_now = ex_df['Close'].iloc[-1]
     ex_prev = ex_df['Close'].iloc[-2]
     ex_delta = ex_now - ex_prev
+elif len(ex_df) == 1:
+    ex_now = ex_df['Close'].iloc[-1]
+    ex_delta = 0
 else:
     ex_now, ex_delta = 1400, 0
 
